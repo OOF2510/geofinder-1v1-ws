@@ -9,7 +9,7 @@ fi
 VERSION=${1}
 
 echo "Running gofmt and go mod tidy..."
-gofmt -w -s .
+gofmt -w .
 go mod tidy
 
 echo "Building the project..."

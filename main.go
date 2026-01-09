@@ -4,54 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
-	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
-
-const API_BASE_URL string = "https://geo.api.oof2510.space/"
-
-type Coordinates struct {
-	Lat float64 `json:"lat"`
-	Lon float64 `json:"lon"`
-}
-
-type ImageResponse struct {
-	ImageURL    string      `json:"imageUrl"`
-	Coordinates Coordinates `json:"coordinates"`
-	CountryName string      `json:"countryName"`
-	CountryCode string      `json:"countryCode"`
-	Contributor string      `json:"contributor"`
-}
-
-
-type EventHandler func(conn *websocket.Conn, data interface{})
-
-type EventRouter struct {
- handlers map[string]EventHandler
-}
-
-// registers an event and its handler
-func (router *EventRouter) On(event string, handler EventHandler) {
- router.handlers[event] = handler
-}
-
-// routes incoming event to the appropriate handler
-func (router *EventRouter) Handle(conn *websocket.Conn, event string, data interface{}) {
- if handler, ok := router.handlers[event]; ok {
-  handler(conn, data)
- } else {
-  // Handle unknown events
-  conn.WriteMessage(websocket.TextMessage, []byte("Unknown event: "+event))
- }
-}
-
-func NewEventRouter() *EventRouter {
- return &EventRouter{handlers: make(map[string]EventHandler)}
-}
 
 var upgrader = websocket.Upgrader{}
 
@@ -85,26 +42,6 @@ func handleWebSocket(ctx *gin.Context, router *EventRouter) {
 
 }
 
-func GetImage() (ImageResponse, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	res, err := client.Get(API_BASE_URL + "getImage")
-	if err != nil {
-		return ImageResponse{}, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return ImageResponse{}, fmt.Errorf("unexpected status code: %d", res.StatusCode)
-	}
-
-	var result ImageResponse
-	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-		return ImageResponse{}, err
-	}
-
-	return result, nil
-}
-
 func main() {
 	server := gin.Default()
 	server.Use((cors.New(cors.Config{
@@ -114,6 +51,7 @@ func main() {
 		AllowCredentials: true,
 		AllowWebSockets: true,
 	})))
+	server.SetTrustedProxies(nil)
 
 	eventRouter := NewEventRouter()
 
@@ -121,7 +59,38 @@ func main() {
   		conn.WriteMessage(websocket.TextMessage, []byte("pong"))
 	})
 
+	eventRouter.On("newRound", func(conn *websocket.Conn, data interface{}) {
+  		imageResp, err := GetImage()
+		if err != nil {
+			fmt.Println("Error fetching image:", err)
+			return
+		}
+		respData, err := json.Marshal(imageResp)
+		if err != nil {
+			fmt.Println("Error marshaling image response:", err)
+			return
+		}
+		conn.WriteMessage(websocket.TextMessage, []byte(respData))
+	})
+
 	server.GET("/ws", func(ctx *gin.Context) {
+		// check for hash query param
+		hash := ctx.Query("roomHash")
+		if hash == "" {
+			ctx.JSON(401, gin.H{"error": "Missing roomHash parameter"})
+			return
+		}
+
+		hashRes, err := VerifyHash(hash)
+		if err != nil {
+			ctx.JSON(401, gin.H{"error": "Error verifying room hash"})
+			return
+		}
+		if !hashRes.Ok {
+			ctx.JSON(401, gin.H{"error": "Invalid room hash"})
+			return
+		}
+
 		handleWebSocket(ctx, eventRouter)
 	})
 
@@ -130,16 +99,6 @@ func main() {
 		fmt.Println("Failed to start server:", err)
 		panic("Failed to start server")
 	}
+	
 	log.Println("Server started on http://localhost:8080")
-
-	imageResp, err := GetImage()
-	if err != nil {
-		fmt.Println("Error fetching image:", err)
-		return
-	}
-
-	fmt.Printf("Image URL: %s\n", imageResp.ImageURL)
-	fmt.Printf("Coordinates: Lat %.6f, Lon %.6f\n", imageResp.Coordinates.Lat, imageResp.Coordinates.Lon)
-	fmt.Printf("Country: %s (%s)\n", imageResp.CountryName, imageResp.CountryCode)
-	fmt.Printf("Contributor: %s\n", imageResp.Contributor)
 }
