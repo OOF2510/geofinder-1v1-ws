@@ -45,22 +45,22 @@ func handleWebSocket(ctx *gin.Context, router *EventRouter) {
 func main() {
 	server := gin.Default()
 	server.Use((cors.New(cors.Config{
-  		AllowOrigins: []string{"*"},
-		AllowMethods: []string{"*"},
-		AllowHeaders: []string{"*"},
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"*"},
+		AllowHeaders:     []string{"*"},
 		AllowCredentials: true,
-		AllowWebSockets: true,
+		AllowWebSockets:  true,
 	})))
 	server.SetTrustedProxies(nil)
 
 	eventRouter := NewEventRouter()
 
 	eventRouter.On("ping", func(conn *websocket.Conn, data interface{}) {
-  		conn.WriteMessage(websocket.TextMessage, []byte("pong"))
+		conn.WriteMessage(websocket.TextMessage, []byte("pong"))
 	})
 
 	eventRouter.On("newRound", func(conn *websocket.Conn, data interface{}) {
-  		imageResp, err := GetImage()
+		imageResp, err := GetImage()
 		if err != nil {
 			fmt.Println("Error fetching image:", err)
 			return
@@ -99,6 +99,6 @@ func main() {
 		fmt.Println("Failed to start server:", err)
 		panic("Failed to start server")
 	}
-	
+
 	log.Println("Server started on http://localhost:8080")
 }
