@@ -1,7 +1,10 @@
 package main
 
-import "github.com/gorilla/websocket"
-
+import (
+	"github.com/gorilla/websocket"
+	"sync"
+	"time"
+)
 type Coordinates struct {
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
@@ -23,4 +26,29 @@ type EventHandler func(conn *websocket.Conn, data interface{})
 
 type EventRouter struct {
  handlers map[string]EventHandler
+}
+
+type AuthPayload struct {
+    Type     string `json:"type"`
+    Hash     string `json:"hash"`
+    ClientID string `json:"clientId,omitempty"`
+}
+
+type Match struct {
+    Hash      string
+    HostConn  *websocket.Conn
+    HostID    string
+    GuestConn *websocket.Conn
+    GuestID   string
+
+    State     string // "waiting","ready","playing","finished"
+    Seed      int64
+    CreatedAt time.Time
+
+    mutex sync.Mutex // protects fields inside this Match
+}
+
+type MatchStore struct {
+    mutex sync.RWMutex
+    matches  map[string]*Match
 }
