@@ -8,8 +8,9 @@ if [ -z "$1" ]; then
 fi
 VERSION=${1}
 
-echo "Running gofmt and go mod tidy..."
+echo "Running gofmt, go mod download and go mod tidy..."
 gofmt -w .
+go mod download
 go mod tidy
 
 echo "Building the project..."

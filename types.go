@@ -52,6 +52,8 @@ type Match struct {
 	GuestConn *websocket.Conn
 	GuestID   string
 
+	GameState GameState
+
 	State     string // "waiting","ready","playing","finished"
 	Seed      int64
 	CreatedAt time.Time
