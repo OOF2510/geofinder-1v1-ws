@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/gorilla/websocket"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Coordinates struct {
@@ -81,7 +82,7 @@ type Round struct {
 	HostGuess   *PlayerAnswer `json:"hostGuess,omitempty"`
 	GuestGuess  *PlayerAnswer `json:"guestGuess,omitempty"`
 	StartedAt   time.Time     `json:"startedAt"`
-	EndedAt     time.Time     `json:"endedAt"`
+	EndTime     time.Time     `json:"endTime"`
 	Finished    bool          `json:"finished"`
 }
 

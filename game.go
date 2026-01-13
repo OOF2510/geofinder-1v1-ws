@@ -5,13 +5,12 @@ import (
 	"time"
 )
 
-
 func PrefetchRounds(match *Match) (ok bool, err error) {
 	log.Printf("Prefetching rounds for match %s", match.Hash)
 
 	for i := range 5 {
 		var imgResp ImageResponse
-	    
+
 		for j := range 5 {
 			imgResp, err = GetImage()
 			if err == nil {
@@ -28,10 +27,10 @@ func PrefetchRounds(match *Match) (ok bool, err error) {
 			CountryCode: imgResp.CountryCode,
 			CountryName: imgResp.CountryName,
 			Coordinates: Coordinates{
-				Lon:  imgResp.Coordinates.Lon,
+				Lon: imgResp.Coordinates.Lon,
 				Lat: imgResp.Coordinates.Lat,
 			},
-			Finished:  false,
+			Finished: false,
 		}
 	}
 	log.Printf("Successfully prefetched all rounds for match %s", match.Hash)
@@ -39,11 +38,10 @@ func PrefetchRounds(match *Match) (ok bool, err error) {
 }
 
 func GetRoundResult(round *Round) (hostCorrect bool, guestCorrect bool) {
-	hostCorrect = round.HostGuess != nil && round.HostGuess.Correct
-	guestCorrect = round.GuestGuess != nil && round.GuestGuess.Correct
+	hostCorrect = round.HostGuess != nil && (round.HostGuess.CountryCode == round.CountryCode || round.HostGuess.CountryName == round.CountryName)
+	guestCorrect = round.GuestGuess != nil && (round.GuestGuess.CountryCode == round.CountryCode || round.GuestGuess.CountryName == round.CountryName)
 	return
 }
-
 
 func IsRoundTimeUp(round *Round) bool {
 	if round.StartedAt.IsZero() {
