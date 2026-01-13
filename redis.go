@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,6 +16,7 @@ var redisClient *redis.Client
 
 func InitRedis() error {
 	redisAddr := os.Getenv("REDIS_URL")
+	redisAddr = strings.TrimPrefix(redisAddr, "redis://")
 	redisClient = redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 		DB:   0,
