@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -11,6 +13,9 @@ import (
 )
 
 var upgrader = websocket.Upgrader{}
+
+var matchStore *MatchStore
+var discoveryConnections []*websocket.Conn
 
 func handleWebSocket(ctx *gin.Context, router *EventRouter) {
 	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
@@ -42,7 +47,38 @@ func handleWebSocket(ctx *gin.Context, router *EventRouter) {
 
 }
 
+func cleanupFinishedMatches() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		matchStore.mutex.RLock()
+		for hash, match := range matchStore.matches {
+			if match.State == "finished" {
+				if time.Since(match.CreatedAt) > 10*time.Minute {
+					matchStore.DeleteMatch(hash)
+					log.Printf("Cleaned up finished match: %s", hash)
+				}
+			}
+		}
+		matchStore.mutex.RUnlock()
+	}
+}
+
 func main() {
+	matchStore = NewMatchStore()
+
+	if err := InitRedis(); err != nil {
+		log.Println("failed to connect to redis" + err.Error())
+	}
+    
+	go func() {
+		ctx := context.Background()
+		SubscribeToRoomUpdates(ctx, discoveryConnections)
+	}()
+
+	go cleanupFinishedMatches()
+
 	server := gin.Default()
 	server.Use((cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
