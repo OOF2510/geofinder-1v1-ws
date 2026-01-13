@@ -43,3 +43,33 @@ func GetRoundResult(round *Round) (hostCorrect bool, guestCorrect bool) {
 	guestCorrect = round.GuestGuess != nil && round.GuestGuess.Correct
 	return
 }
+
+
+func IsRoundTimeUp(round *Round) bool {
+	if round.StartedAt.IsZero() {
+		return false
+	}
+	elapsed := time.Since(round.StartedAt)
+	return elapsed >= 30*time.Second
+}
+
+func GetWinner(hostscore, guestscore int) string {
+	if hostscore > guestscore {
+		return "host"
+	} else if guestscore > hostscore {
+		return "guest"
+	} else {
+		return "tie"
+	}
+}
+
+func GetPlayerCount(match *Match) int {
+	count := 0
+	if match.HostConn != nil {
+		count++
+	}
+	if match.GuestConn != nil {
+		count++
+	}
+	return count
+}
