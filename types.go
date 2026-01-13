@@ -35,6 +35,13 @@ type AuthPayload struct {
 	ClientID string `json:"clientId,omitempty"`
 }
 
+type AuthOkPayload struct {
+    Type      string `json:"type"`
+    PlayerId  string `json:"playerId"`
+    Role      string `json:"role"` // "host" | "guest"
+    RoomState string `json:"roomState"`
+}
+
 type Match struct {
 	Hash      string
 	HostConn  *websocket.Conn
