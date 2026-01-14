@@ -288,6 +288,17 @@ func main() {
 			matchStore.SetConnection(hash, playerID, role, conn)
 		}
 
+		playerCount := GetPlayerCount(match)
+		match.mutex.Lock()
+		if playerCount == 2 && match.State == "waiting" {
+			match.State = "playing"
+			PublishRoomState(hash, match.State, playerCount)
+			PrefetchRounds(match)
+			matchStore.StartNextRound(hash)
+			go roundTimeoutChecker(hash)
+		}
+		match.mutex.Unlock()
+
 		StorePlayerIDs(hash, match.HostID, match.GuestID)
 
 		authok := AuthOkPayload{
@@ -300,15 +311,6 @@ func main() {
 			GuestScore:   match.GameState.GuestScore,
 		}
 		conn.WriteJSON(authok)
-
-		playerCount := GetPlayerCount(match)
-		if playerCount == 2 && match.State == "waiting" {
-			match.State = "playing"
-			PublishRoomState(hash, match.State, playerCount)
-			PrefetchRounds(match)
-			matchStore.StartNextRound(hash)
-			go roundTimeoutChecker(hash)
-		}
 	})
 
 	eventRouter.On("reconnect", func(conn *websocket.Conn, data interface{}) {
