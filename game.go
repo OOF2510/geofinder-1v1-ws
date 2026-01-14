@@ -22,7 +22,7 @@ func PrefetchRounds(match *Match) (ok bool, err error) {
 			time.Sleep(1 * time.Second)
 		}
 
-		match.GameState.Rounds[i] = Round{
+		round := Round{
 			ImageURL:    imgResp.ImageURL,
 			CountryCode: imgResp.CountryCode,
 			CountryName: imgResp.CountryName,
@@ -32,6 +32,10 @@ func PrefetchRounds(match *Match) (ok bool, err error) {
 			},
 			Finished: false,
 		}
+
+		match.mutex.Lock()
+		match.GameState.Rounds[i] = round
+		match.mutex.Unlock()
 	}
 	log.Printf("Successfully prefetched all rounds for match %s", match.Hash)
 	return true, nil
