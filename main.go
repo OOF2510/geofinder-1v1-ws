@@ -315,16 +315,17 @@ func main() {
 					match.State = "playing"
 					log.Printf("Starting game for match %s", hash)
 					PublishRoomState(hash, match.State, playerCount)
-					err := matchStore.StartNextRound(hash)
-					if err != nil {
-						log.Printf("Error starting round: %v", err)
-					} else {
-						go roundTimeoutChecker(hash)
-					}
 				} else {
 					log.Printf("Match %s already started (state: %s)", hash, match.State)
 				}
 				match.mutex.Unlock()
+
+				err := matchStore.StartNextRound(hash)
+				if err != nil {
+					log.Printf("Error starting round: %v", err)
+				} else {
+					go roundTimeoutChecker(hash)
+				}
 			case <-time.After(30 * time.Second):
 				log.Printf("Timeout waiting for match %s to be ready", hash)
 				conn.WriteJSON(map[string]interface{}{

@@ -135,23 +135,29 @@ func (store *MatchStore) BroadcastToRoom(hash string, message interface{}) error
 		return fmt.Errorf("Match %s not found", hash)
 	}
 
-	match.mutex.RLock()
-	defer match.mutex.RUnlock()
-
 	msg, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
 
+	match.mutex.RLock()
+	defer match.mutex.RUnlock()
+
+	log.Printf("Broadcasting to match %s: host=%v, guest=%v", hash, match.HostConn != nil, match.GuestConn != nil)
+
 	if match.HostConn != nil {
 		if err := match.HostConn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			log.Printf("Error sending message to host in match %s: %v", hash, err)
+			return fmt.Errorf("failed to send to host: %w", err)
 		}
+		log.Printf("Successfully sent message to host in match %s", hash)
 	}
 	if match.GuestConn != nil {
 		if err := match.GuestConn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			log.Printf("Error sending message to guest in match %s: %v", hash, err)
+			return fmt.Errorf("failed to send to guest: %w", err)
 		}
+		log.Printf("Successfully sent message to guest in match %s", hash)
 	}
 
 	return nil
