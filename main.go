@@ -233,9 +233,19 @@ func main() {
 	})
 
 	eventRouter.On("auth", func(conn *websocket.Conn, data interface{}) {
-		dataMap := data.(map[string]interface{})
-		hash := dataMap["hash"].(string)
-		playerID := dataMap["playerID"].(string)
+		dataMap, ok := data.(map[string]interface{})
+		if !ok {
+			conn.WriteJSON(map[string]interface{}{"type": "error", "message": "invalid payload"})
+			return
+		}
+
+		hash, _ := dataMap["hash"].(string)
+		if hash == "" {
+			conn.WriteJSON(map[string]interface{}{"type": "error", "message": "Missing hash"})
+			return
+		}
+
+		playerID, _ := dataMap["playerID"].(string)
 
 		match, exists := matchStore.GetMatch(hash)
 		if !exists {
@@ -302,9 +312,22 @@ func main() {
 	})
 
 	eventRouter.On("reconnect", func(conn *websocket.Conn, data interface{}) {
-		dataMap := data.(map[string]interface{})
-		hash := dataMap["hash"].(string)
-		playerID := dataMap["playerId"].(string)
+		dataMap, ok := data.(map[string]interface{})
+		if !ok {
+			conn.WriteJSON(map[string]interface{}{"type": "error", "message": "invalid payload"})
+			return
+		}
+
+		hash, _ := dataMap["hash"].(string)
+		if hash == "" {
+			conn.WriteJSON(map[string]interface{}{"type": "error", "message": "Missing hash"})
+			return
+		}
+
+		playerID, _ := dataMap["playerId"].(string)
+		if playerID == "" {
+			playerID, _ = dataMap["playerID"].(string)
+		}
 
 		role, canReconnect := matchStore.CanReconnect(hash, playerID)
 		if !canReconnect {
@@ -328,11 +351,30 @@ func main() {
 	})
 
 	eventRouter.On("submit_answer", func(conn *websocket.Conn, data interface{}) {
-		dataMap := data.(map[string]interface{})
-		hash := dataMap["hash"].(string)
-		playerID := dataMap["playerId"].(string)
-		countryCode := dataMap["countryCode"].(string)
-		countryName := dataMap["countryName"].(string)
+		dataMap, ok := data.(map[string]interface{})
+		if !ok {
+			conn.WriteJSON(map[string]interface{}{"type": "error", "message": "invalid payload"})
+			return
+		}
+
+		hash, _ := dataMap["hash"].(string)
+		if hash == "" {
+			conn.WriteJSON(map[string]interface{}{"type": "error", "message": "Missing hash"})
+			return
+		}
+
+		playerID, _ := dataMap["playerId"].(string)
+		if playerID == "" {
+			playerID, _ = dataMap["playerID"].(string)
+		}
+
+		countryCode, _ := dataMap["countryCode"].(string)
+		countryName, _ := dataMap["countryName"].(string)
+
+		if playerID == "" || countryCode == "" {
+			conn.WriteJSON(map[string]interface{}{"type": "error", "message": "Missing fields"})
+			return
+		}
 
 		matchStore.SubmitAnswer(hash, playerID, countryCode, countryName)
 
