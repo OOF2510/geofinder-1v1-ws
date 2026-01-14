@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -370,11 +371,20 @@ func main() {
 	server.GET("/status", func(ctx *gin.Context) {
 
 		localTime := time.Now().Local()
+		//get memory usage
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
 
 		ctx.JSON(200, gin.H{
-			"status": "ok",
-			"time":   localTime,
+			"status":                "ok",
+			"time":                  localTime,
 			"active_ws_connections": len(matchStore.matches),
+			"memory_stats": map[string]uint64{
+				"Alloc":      mem.Alloc,
+				"TotalAlloc": mem.TotalAlloc,
+				"Sys":        mem.Sys,
+				"NumGC":      uint64(mem.NumGC),
+			},
 		})
 	})
 
