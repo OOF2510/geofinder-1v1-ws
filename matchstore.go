@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
+
+var discoveryMutex sync.Mutex
 
 func NewMatchStore() *MatchStore {
 	return &MatchStore{
@@ -51,7 +54,9 @@ func (store *MatchStore) CreateMatch(hash string) *Match {
 			m.mutex.Lock()
 			m.GameReady = true
 			m.mutex.Unlock()
-			close(m.ReadyChan)
+			m.ReadyOnce.Do(func() {
+				close(m.ReadyChan)
+			})
 			log.Printf("Match %s is ready", hash)
 		} else {
 			log.Printf("Failed to prefetch rounds for match %s: %v", hash, err)

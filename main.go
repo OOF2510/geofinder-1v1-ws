@@ -288,28 +288,6 @@ func main() {
 			matchStore.SetConnection(hash, playerID, role, conn)
 		}
 
-		playerCount := GetPlayerCount(match)
-		if playerCount == 2 && match.State == "waiting" {
-			select {
-			case <-match.ReadyChan:
-				match.mutex.Lock()
-				if match.State == "waiting" {
-					match.State = "playing"
-					PublishRoomState(hash, match.State, playerCount)
-					matchStore.StartNextRound(hash)
-					go roundTimeoutChecker(hash)
-				}
-				match.mutex.Unlock()
-			case <-time.After(30 * time.Second):
-				log.Printf("Timeout waiting for match %s to be ready", hash)
-				conn.WriteJSON(map[string]interface{}{
-					"type":    "error",
-					"message": "Game initialization timeout",
-				})
-				return
-			}
-		}
-
 		StorePlayerIDs(hash, match.HostID, match.GuestID)
 
 		authok := AuthOkPayload{
@@ -321,7 +299,41 @@ func main() {
 			HostScore:    match.GameState.HostScore,
 			GuestScore:   match.GameState.GuestScore,
 		}
-		conn.WriteJSON(authok)
+		err := conn.WriteJSON(authok)
+		if err != nil {
+			log.Printf("Error sending auth_ok to %s: %v", role, err)
+			return
+		}
+
+		playerCount := GetPlayerCount(match)
+		if playerCount == 2 && match.State == "waiting" {
+			log.Printf("Both players connected for match %s, waiting for game ready", hash)
+			select {
+			case <-match.ReadyChan:
+				match.mutex.Lock()
+				if match.State == "waiting" {
+					match.State = "playing"
+					log.Printf("Starting game for match %s", hash)
+					PublishRoomState(hash, match.State, playerCount)
+					err := matchStore.StartNextRound(hash)
+					if err != nil {
+						log.Printf("Error starting round: %v", err)
+					} else {
+						go roundTimeoutChecker(hash)
+					}
+				} else {
+					log.Printf("Match %s already started (state: %s)", hash, match.State)
+				}
+				match.mutex.Unlock()
+			case <-time.After(30 * time.Second):
+				log.Printf("Timeout waiting for match %s to be ready", hash)
+				conn.WriteJSON(map[string]interface{}{
+					"type":    "error",
+					"message": "Game initialization timeout",
+				})
+				return
+			}
+		}
 	})
 
 	eventRouter.On("reconnect", func(conn *websocket.Conn, data interface{}) {

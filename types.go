@@ -60,6 +60,7 @@ type Match struct {
 	CreatedAt time.Time
 	GameReady bool
 	ReadyChan chan struct{}
+	ReadyOnce sync.Once
 
 	mutex sync.RWMutex // protects fields inside this Match
 }
