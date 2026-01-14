@@ -257,6 +257,9 @@ func main() {
 		}
 		var role string
 
+
+		go PrefetchRounds(match)
+
 		if playerID == "" {
 			if match.HostConn == nil {
 				role = "host"
@@ -293,7 +296,6 @@ func main() {
 		if playerCount == 2 && match.State == "waiting" {
 			match.State = "playing"
 			PublishRoomState(hash, match.State, playerCount)
-			PrefetchRounds(match)
 			matchStore.StartNextRound(hash)
 			go roundTimeoutChecker(hash)
 		}

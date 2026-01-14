@@ -317,7 +317,20 @@ func (store *MatchStore) CanReconnect(hash string, playerID string) (string, boo
 }
 
 func (store *MatchStore) ReconnectPlayer(hash string, role string, conn *websocket.Conn) error {
-	return store.SetConnection(hash, "", role, conn)
+	match, exists := store.GetMatch(hash)
+	if !exists {
+		return fmt.Errorf("Match %s not found", hash)
+	}
+
+	var playerID string
+	switch role {
+	case "host":
+		playerID = match.HostID
+	case "guest":
+		playerID = match.GuestID
+	}
+
+	return store.SetConnection(hash, playerID, role, conn)
 }
 
 func (store *MatchStore) GetWaitingRooms() []RoomStatePayload {
