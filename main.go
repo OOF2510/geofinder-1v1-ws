@@ -368,13 +368,8 @@ func main() {
 	})
 
 	server.GET("/status", func(ctx *gin.Context) {
-		loc, err := time.LoadLocation("America/New_York")
-		if err != nil {
-			fmt.Println("Error loading location:", err)
-			ctx.JSON(418, gin.H{"error": err.Error()})
-			return
-		}
-		localTime := time.Now().In(loc)
+
+		localTime := time.Now().Local()
 
 		ctx.JSON(200, gin.H{
 			"status": "ok",
