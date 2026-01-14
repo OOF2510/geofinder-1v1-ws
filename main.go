@@ -65,6 +65,128 @@ func cleanupFinishedMatches() {
 	}
 }
 
+func handleGameConnection(ctx *gin.Context, router *EventRouter) {
+    hash := ctx.Query("roomHash")
+    if hash == "" {
+        ctx.JSON(401, gin.H{"error": "Missing roomHash"})
+        return
+    }
+
+    hashRes, err := VerifyHash(hash)
+    if err != nil || !hashRes.Ok {
+        ctx.JSON(401, gin.H{"error": "Invalid room hash"})
+        return
+    }
+
+    match, _ := matchStore.GetMatch(hash)
+    if match == nil {
+        match = matchStore.CreateMatch(hash)
+    }
+
+    conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
+    if err != nil {
+        log.Printf("WebSocket upgrade failed: %v", err)
+        return
+    }
+    defer conn.Close()
+
+    log.Printf("WebSocket connected for match %s", hash)
+
+    for {
+        var message struct {
+            Event string      `json:"event"`
+            Data  interface{} `json:"data"`
+        }
+        err := conn.ReadJSON(&message)
+        if err != nil {
+            log.Printf("Read error: %v", err)
+            break
+        }
+
+        dataMap := message.Data.(map[string]interface{})
+        dataMap["hash"] = hash
+
+        router.Handle(conn, message.Event, dataMap)
+    }
+
+}
+
+func handleDiscoveryConnection(ctx *gin.Context) {
+    conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
+    if err != nil {
+        log.Printf("Discovery WebSocket upgrade failed: %v", err)
+        return
+    }
+
+    // Add to discovery connections
+    discoveryConnections = append(discoveryConnections, conn)
+    log.Println("New discovery connection")
+
+    // Send initial waiting rooms
+    rooms := matchStore.GetWaitingRooms()
+    conn.WriteJSON(map[string]interface{}{
+        "type": "rooms_list",
+        "data": rooms,
+    })
+
+	// Handle disconnection
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				for i, c := range discoveryConnections {
+					if c == conn {
+						discoveryConnections = append(discoveryConnections[:i], discoveryConnections[i+1:]...)
+						break
+					}
+				}
+				break
+			}
+		}
+	}()
+}
+
+func roundTimeoutChecker(hash string) {
+    for {
+        match, exists := matchStore.GetMatch(hash)
+        if !exists || match.State != "playing" {
+            break
+        }
+
+        roundNum := match.GameState.CurrentRound - 1
+        if roundNum < 0 || roundNum >= 5 {
+            break
+        }
+
+        round := &match.GameState.Rounds[roundNum]
+        if IsRoundTimeUp(round) {
+            shouldEnd, _ := matchStore.ShouldEndRound(hash)
+            if shouldEnd && !round.Finished {
+                result, _ := matchStore.EndRound(hash)
+                matchStore.BroadcastToRoom(hash, result)
+
+                match, _ := matchStore.GetMatch(hash)
+                if match.GameState.CurrentRound < 5 {
+                    time.AfterFunc(3*time.Second, func() {
+                        matchStore.StartNextRound(hash)
+                    })
+                } else {
+                    gameEnd := GameEndPayload{
+                        Type:       "game_end",
+                        HostScore:  match.GameState.HostScore,
+                        GuestScore: match.GameState.GuestScore,
+                        Winner:     GetWinner(match.GameState.HostScore, match.GameState.GuestScore),
+                    }
+                    matchStore.BroadcastToRoom(hash, gameEnd)
+                    match.State = "finished"
+                    PublishRoomState(hash, "finished", 2)
+                }
+            }
+        }
+
+        time.Sleep(1 * time.Second)
+    }
+}
+
 func main() {
 	matchStore = NewMatchStore()
 
@@ -95,6 +217,7 @@ func main() {
 		conn.WriteMessage(websocket.TextMessage, []byte("pong"))
 	})
 
+
 	eventRouter.On("newRound", func(conn *websocket.Conn, data interface{}) {
 		imageResp, err := GetImage()
 		if err != nil {
@@ -109,25 +232,140 @@ func main() {
 		conn.WriteMessage(websocket.TextMessage, []byte(respData))
 	})
 
+	eventRouter.On("auth", func(conn *websocket.Conn, data interface{}) {
+		dataMap := data.(map[string]interface{})
+		hash := dataMap["hash"].(string)
+		playerID := dataMap["playerID"].(string)
+
+		match, exists := matchStore.GetMatch(hash)
+		if !exists {
+			conn.WriteJSON(map[string]interface{}{
+				"type": "error",
+				"message": "Match not found",
+			})
+			return
+		}
+		var role string
+
+		if playerID == "" {
+			if match.HostConn == nil {
+				role = "host"
+				id, _ := GeneratePlayerID()
+				matchStore.SetConnection(hash, id, role, conn)
+				playerID = id
+			} else if match.GuestConn == nil {
+				role = "guest"
+				id, _ := GeneratePlayerID()
+				matchStore.SetConnection(hash, id, role, conn)
+				playerID = id
+			} else {
+				conn.WriteJSON(map[string]interface{}{
+					"type": "error",
+					"message": "Match is full",
+				})
+				return
+			}
+		} else {
+			existingRole, found := matchStore.CanReconnect(hash, playerID)
+			if !found {
+				conn.WriteJSON(map[string]interface{}{
+					"type": "error",
+					"message": "Cannot reconnect",
+				})
+				return
+			}
+			role = existingRole
+			matchStore.SetConnection(hash, playerID, role, conn)
+		}
+
+		StorePlayerIDs(hash, match.HostID, match.GuestID)
+
+		authok := AuthOkPayload{
+			Type: "auth_ok",
+			PlayerId: playerID,
+			Role: role,
+			RoomState: match.State,
+			CurrentRound: match.GameState.CurrentRound,
+			HostScore: match.GameState.HostScore,
+			GuestScore: match.GameState.GuestScore,
+		}
+		conn.WriteJSON(authok)
+		
+		playerCount := GetPlayerCount(match)
+		if playerCount == 2 && match.State == "waiting" {
+			match.State = "playing"
+			PublishRoomState(hash, match.State, playerCount)
+			PrefetchRounds(match)
+			matchStore.StartNextRound(hash)
+			go roundTimeoutChecker(hash)
+		}
+	})
+
+	eventRouter.On("reconnect", func(conn *websocket.Conn, data interface{}) {
+    dataMap := data.(map[string]interface{})
+    hash := dataMap["hash"].(string)
+    playerID := dataMap["playerId"].(string)
+
+    role, canReconnect := matchStore.CanReconnect(hash, playerID)
+    if !canReconnect {
+        conn.WriteJSON(map[string]interface{}{
+            "type": "error",
+            "message": "Cannot reconnect",
+        })
+        return
+    }
+
+    matchStore.ReconnectPlayer(hash, role, conn)
+
+    match, _ := matchStore.GetMatch(hash)
+    conn.WriteJSON(ReconnectOkPayload{
+        Type:         "reconnect_ok",
+        PlayerId:     playerID,
+        Role:         role,
+        RoomState:    match.State,
+        GameState:    &match.GameState,
+    })
+})
+
+	eventRouter.On("submit_answer", func(conn *websocket.Conn, data interface{}) {
+    dataMap := data.(map[string]interface{})
+    hash := dataMap["hash"].(string)
+    playerID := dataMap["playerId"].(string)
+    countryCode := dataMap["countryCode"].(string)
+    countryName := dataMap["countryName"].(string)
+
+    matchStore.SubmitAnswer(hash, playerID, countryCode, countryName)
+
+    shouldEnd, _ := matchStore.ShouldEndRound(hash)
+    if shouldEnd {
+        result, _ := matchStore.EndRound(hash)
+        matchStore.BroadcastToRoom(hash, result)
+
+        match, _ := matchStore.GetMatch(hash)
+        if match.GameState.CurrentRound < 5 {
+            time.AfterFunc(3*time.Second, func() {
+                matchStore.StartNextRound(hash)
+            })
+        } else {
+            gameEnd := GameEndPayload{
+                Type:       "game_end",
+                HostScore:  match.GameState.HostScore,
+                GuestScore: match.GameState.GuestScore,
+                Winner:     GetWinner(match.GameState.HostScore, match.GameState.GuestScore),
+            }
+            matchStore.BroadcastToRoom(hash, gameEnd)
+            match.State = "finished"
+            PublishRoomState(hash, "finished", 2)
+        }
+    }
+})
+
 	server.GET("/ws", func(ctx *gin.Context) {
-		// check for hash query param
-		hash := ctx.Query("roomHash")
-		if hash == "" {
-			ctx.JSON(401, gin.H{"error": "Missing roomHash parameter"})
-			return
-		}
-
-		hashRes, err := VerifyHash(hash)
-		if err != nil {
-			ctx.JSON(401, gin.H{"error": "Error verifying room hash"})
-			return
-		}
-		if !hashRes.Ok {
-			ctx.JSON(401, gin.H{"error": "Invalid room hash"})
-			return
-		}
-
-		handleWebSocket(ctx, eventRouter)
+		handleGameConnection(ctx, eventRouter)
+	})
+	
+	server.GET("/ws/discovery", func(ctx *gin.Context) {
+		handleDiscoveryConnection(ctx)
 	})
 
 	err := server.Run(":8080")
