@@ -371,6 +371,7 @@ func main() {
 		loc, err := time.LoadLocation("America/New_York")
 		if err != nil {
 			fmt.Println("Error loading location:", err)
+			ctx.JSON(418, gin.H{"error": err.Error()})
 			return
 		}
 		localTime := time.Now().In(loc)
