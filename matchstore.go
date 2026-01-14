@@ -34,6 +34,8 @@ func (store *MatchStore) CreateMatch(hash string) *Match {
 	match := &Match{
 		Hash:      hash,
 		State:     "waiting",
+		GameReady: false,
+		ReadyChan: make(chan struct{}),
 		CreatedAt: time.Now(),
 		GameState: GameState{
 			Rounds: [5]Round{},
@@ -41,6 +43,21 @@ func (store *MatchStore) CreateMatch(hash string) *Match {
 	}
 	store.matches[hash] = match
 	log.Printf("Created new match: %s", hash)
+
+	go func(m *Match) {
+		log.Printf("Prefetching rounds for new match %s", hash)
+		ok, err := PrefetchRounds(m)
+		if ok && err == nil {
+			m.mutex.Lock()
+			m.GameReady = true
+			m.mutex.Unlock()
+			close(m.ReadyChan)
+			log.Printf("Match %s is ready", hash)
+		} else {
+			log.Printf("Failed to prefetch rounds for match %s: %v", hash, err)
+		}
+	}(match)
+
 	return match
 }
 

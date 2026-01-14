@@ -58,6 +58,8 @@ type Match struct {
 	State     string // "waiting","ready","playing","finished"
 	Seed      int64
 	CreatedAt time.Time
+	GameReady bool
+	ReadyChan chan struct{}
 
 	mutex sync.RWMutex // protects fields inside this Match
 }

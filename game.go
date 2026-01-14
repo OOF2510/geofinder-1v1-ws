@@ -17,9 +17,13 @@ func PrefetchRounds(match *Match) (ok bool, err error) {
 				log.Printf("Fetched round %d image for match %s: %s", i+1, match.Hash, imgResp.ImageURL)
 				break
 			}
-			ok = false
 			log.Printf("Error fetching image for match %s: %v. Retrying..., try %d", match.Hash, err, j+1)
 			time.Sleep(1 * time.Second)
+		}
+
+		if err != nil {
+			log.Printf("Failed to fetch image for round %d of match %s after 5 attempts: %v", i+1, match.Hash, err)
+			return false, err
 		}
 
 		round := Round{

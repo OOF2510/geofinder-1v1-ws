@@ -257,9 +257,6 @@ func main() {
 		}
 		var role string
 
-
-		go PrefetchRounds(match)
-
 		if playerID == "" {
 			if match.HostConn == nil {
 				role = "host"
@@ -292,14 +289,26 @@ func main() {
 		}
 
 		playerCount := GetPlayerCount(match)
-		match.mutex.Lock()
 		if playerCount == 2 && match.State == "waiting" {
-			match.State = "playing"
-			PublishRoomState(hash, match.State, playerCount)
-			matchStore.StartNextRound(hash)
-			go roundTimeoutChecker(hash)
+			select {
+			case <-match.ReadyChan:
+				match.mutex.Lock()
+				if match.State == "waiting" {
+					match.State = "playing"
+					PublishRoomState(hash, match.State, playerCount)
+					matchStore.StartNextRound(hash)
+					go roundTimeoutChecker(hash)
+				}
+				match.mutex.Unlock()
+			case <-time.After(30 * time.Second):
+				log.Printf("Timeout waiting for match %s to be ready", hash)
+				conn.WriteJSON(map[string]interface{}{
+					"type":    "error",
+					"message": "Game initialization timeout",
+				})
+				return
+			}
 		}
-		match.mutex.Unlock()
 
 		StorePlayerIDs(hash, match.HostID, match.GuestID)
 
