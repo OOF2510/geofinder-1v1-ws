@@ -5,17 +5,14 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/gin-contrib/cors"
-	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/websocket/v2"
 	"github.com/sirupsen/logrus"
 )
 
-var upgrader = websocket.Upgrader{}
-
 var matchStore *MatchStore
 var discoveryConnections []*websocket.Conn
-
 
 func cleanupFinishedMatches() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -37,16 +34,16 @@ func cleanupFinishedMatches() {
 	}
 }
 
-func handleGameConnection(ctx *gin.Context, router *EventRouter) {
-	hash := ctx.Query("roomHash")
+func handleGameConnection(c *websocket.Conn, router *EventRouter) {
+	hash := c.Query("roomHash")
 	if hash == "" {
-		ctx.JSON(401, gin.H{"error": "Missing roomHash"})
+		c.WriteJSON(map[string]interface{}{"error": "Missing roomHash"})
 		return
 	}
 
 	hashRes, err := VerifyHash(hash)
 	if err != nil || !hashRes.Ok {
-		ctx.JSON(401, gin.H{"error": "Invalid room hash"})
+		c.WriteJSON(map[string]interface{}{"error": "Invalid room hash"})
 		return
 	}
 
@@ -55,13 +52,6 @@ func handleGameConnection(ctx *gin.Context, router *EventRouter) {
 		match = matchStore.CreateMatch(hash)
 	}
 
-	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
-	if err != nil {
-		LogWebSocketError(hash, err)
-		return
-	}
-	defer conn.Close()
-
 	LogWebSocketConnection(hash, "", "", true)
 
 	for {
@@ -69,7 +59,7 @@ func handleGameConnection(ctx *gin.Context, router *EventRouter) {
 			Event string      `json:"event"`
 			Data  interface{} `json:"data"`
 		}
-		err := conn.ReadJSON(&message)
+		err := c.ReadJSON(&message)
 		if err != nil {
 			LogWebSocketError(hash, err)
 			break
@@ -78,25 +68,19 @@ func handleGameConnection(ctx *gin.Context, router *EventRouter) {
 		dataMap := message.Data.(map[string]interface{})
 		dataMap["hash"] = hash
 
-		router.Handle(conn, message.Event, dataMap)
+		router.Handle(c, message.Event, dataMap)
 	}
 
 }
 
-func handleDiscoveryConnection(ctx *gin.Context) {
-	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
-	if err != nil {
-		LogRedisError("discovery_upgrade", err)
-		return
-	}
-
+func handleDiscoveryConnection(c *websocket.Conn) {
 	// Add to discovery connections
-	discoveryConnections = append(discoveryConnections, conn)
+	discoveryConnections = append(discoveryConnections, c)
 	LogDiscoveryConnection(true, len(discoveryConnections))
 
 	// Send initial waiting rooms
 	rooms := matchStore.GetWaitingRooms()
-	conn.WriteJSON(map[string]interface{}{
+	c.WriteJSON(map[string]interface{}{
 		"type": "rooms_list",
 		"data": rooms,
 	})
@@ -104,9 +88,9 @@ func handleDiscoveryConnection(ctx *gin.Context) {
 	// Handle disconnection
 	go func() {
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				for i, c := range discoveryConnections {
-					if c == conn {
+			if _, _, err := c.ReadMessage(); err != nil {
+				for i, conn := range discoveryConnections {
+					if conn == c {
 						discoveryConnections = append(discoveryConnections[:i], discoveryConnections[i+1:]...)
 						LogDiscoveryConnection(false, len(discoveryConnections))
 						break
@@ -204,15 +188,12 @@ func main() {
 
 	go cleanupFinishedMatches()
 
-	server := gin.Default()
-	server.Use((cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"*"},
-		AllowHeaders:     []string{"*"},
-		AllowCredentials: true,
-		AllowWebSockets:  true,
-	})))
-	server.SetTrustedProxies(nil)
+	app := fiber.New()
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowMethods: "GET,POST,HEAD,PUT,DELETE,PATCH,OPTIONS",
+		AllowHeaders: "*",
+	}))
 
 	eventRouter := NewEventRouter()
 
@@ -442,22 +423,38 @@ func main() {
 		}
 	})
 
-	server.GET("/ws", func(ctx *gin.Context) {
-		handleGameConnection(ctx, eventRouter)
+	// WebSocket middleware for game connections
+	app.Use("/ws", func(c *fiber.Ctx) error {
+		if websocket.IsWebSocketUpgrade(c) {
+			return c.Next()
+		}
+		return fiber.ErrUpgradeRequired
 	})
 
-	server.GET("/ws/discovery", func(ctx *gin.Context) {
-		handleDiscoveryConnection(ctx)
+	// Game WebSocket connection
+	app.Get("/ws", websocket.New(func(c *websocket.Conn) {
+		handleGameConnection(c, eventRouter)
+	}))
+
+	// Discovery WebSocket connection
+	app.Use("/ws/discovery", func(c *fiber.Ctx) error {
+		if websocket.IsWebSocketUpgrade(c) {
+			return c.Next()
+		}
+		return fiber.ErrUpgradeRequired
 	})
 
-	server.GET("/status", func(ctx *gin.Context) {
+	app.Get("/ws/discovery", websocket.New(func(c *websocket.Conn) {
+		handleDiscoveryConnection(c)
+	}))
 
+	// Status endpoint
+	app.Get("/status", func(c *fiber.Ctx) error {
 		localTime := time.Now().Local()
-		//get memory usage
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
 
-		ctx.JSON(200, gin.H{
+		return c.JSON(fiber.Map{
 			"status":                "ok",
 			"time":                  localTime,
 			"active_ws_connections": len(matchStore.matches),
@@ -470,7 +467,7 @@ func main() {
 		})
 	})
 
-	err := server.Run(":8080")
+	err := app.Listen(":8080")
 	if err != nil {
 		LogWithFields(logrus.Fields{
 			"event": "server_start_error",

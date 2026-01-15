@@ -1,6 +1,6 @@
 package main
 
-import "github.com/gorilla/websocket"
+import "github.com/gofiber/websocket/v2"
 
 // registers an event and its handler
 func (router *EventRouter) On(event string, handler EventHandler) {

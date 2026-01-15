@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gofiber/websocket/v2"
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
 

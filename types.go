@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/gofiber/websocket/v2"
 )
 
 type Coordinates struct {
