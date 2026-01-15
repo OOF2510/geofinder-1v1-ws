@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -61,6 +62,7 @@ type Match struct {
 	GameReady bool
 	ReadyChan chan struct{}
 	ReadyOnce sync.Once
+	Cancel    context.CancelFunc
 
 	mutex sync.RWMutex // protects fields inside this Match
 }

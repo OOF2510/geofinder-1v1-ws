@@ -86,7 +86,7 @@ func GetPlayerIDs(hash string) (string, string, error) {
 	return result.HostID, result.GuestID, err
 }
 
-func SubscribeToRoomUpdates(ctx context.Context, discoveryConnections []*websocket.Conn) {
+func SubscribeToRoomUpdates(ctx context.Context) {
 	pubsub := redisClient.Subscribe(ctx, "geofinder:room_updates")
 	defer pubsub.Close()
 
@@ -97,7 +97,12 @@ func SubscribeToRoomUpdates(ctx context.Context, discoveryConnections []*websock
 		LogRedisMessage("geofinder:room_updates", msg.Payload)
 
 		// Broadcast to all discovery connections
-		for _, conn := range discoveryConnections {
+		discoveryMutex.RLock()
+		connections := make([]*websocket.Conn, len(discoveryConnections))
+		copy(connections, discoveryConnections)
+		discoveryMutex.RUnlock()
+
+		for _, conn := range connections {
 			err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
 			if err != nil {
 				LogBroadcastError("", "discovery_client", err)

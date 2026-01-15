@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -31,12 +32,14 @@ func (store *MatchStore) CreateMatch(hash string) *Match {
 		return match
 	}
 
+	_, cancel := context.WithCancel(context.Background())
 	match := &Match{
 		Hash:      hash,
 		State:     "waiting",
 		GameReady: false,
 		ReadyChan: make(chan struct{}),
 		CreatedAt: time.Now(),
+		Cancel:    cancel,
 		GameState: GameState{
 			Rounds: [5]Round{},
 		},
@@ -67,8 +70,13 @@ func (store *MatchStore) CreateMatch(hash string) *Match {
 
 func (store *MatchStore) DeleteMatch(hash string) {
 	store.mutex.Lock()
+	match := store.matches[hash]
 	delete(store.matches, hash)
 	store.mutex.Unlock()
+
+	if match != nil {
+		match.Cancel()
+	}
 	LogMatchLifecycle(hash, "deleted", logrus.Fields{})
 }
 
@@ -141,8 +149,8 @@ func (store *MatchStore) BroadcastToRoom(hash string, message interface{}) error
 		return err
 	}
 
-	match.mutex.RLock()
-	defer match.mutex.RUnlock()
+	match.mutex.Lock()
+	defer match.mutex.Unlock()
 
 	recipientCount := 0
 	if match.HostConn != nil {
@@ -156,12 +164,14 @@ func (store *MatchStore) BroadcastToRoom(hash string, message interface{}) error
 	if match.HostConn != nil {
 		if err := match.HostConn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			LogBroadcastError(hash, "host", err)
+			match.HostConn = nil
 			return fmt.Errorf("failed to send to host: %w", err)
 		}
 	}
 	if match.GuestConn != nil {
 		if err := match.GuestConn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			LogBroadcastError(hash, "guest", err)
+			match.GuestConn = nil
 			return fmt.Errorf("failed to send to guest: %w", err)
 		}
 	}

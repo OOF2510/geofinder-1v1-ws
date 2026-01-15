@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -13,6 +14,7 @@ import (
 
 var matchStore *MatchStore
 var discoveryConnections []*websocket.Conn
+var discoveryMutex sync.RWMutex
 
 func cleanupFinishedMatches() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -75,7 +77,9 @@ func handleGameConnection(c *websocket.Conn, router *EventRouter) {
 
 func handleDiscoveryConnection(c *websocket.Conn) {
 	// Add to discovery connections
+	discoveryMutex.Lock()
 	discoveryConnections = append(discoveryConnections, c)
+	discoveryMutex.Unlock()
 	LogDiscoveryConnection(true, len(discoveryConnections))
 
 	// Send initial waiting rooms
@@ -89,6 +93,7 @@ func handleDiscoveryConnection(c *websocket.Conn) {
 	go func() {
 		for {
 			if _, _, err := c.ReadMessage(); err != nil {
+				discoveryMutex.Lock()
 				for i, conn := range discoveryConnections {
 					if conn == c {
 						discoveryConnections = append(discoveryConnections[:i], discoveryConnections[i+1:]...)
@@ -96,81 +101,88 @@ func handleDiscoveryConnection(c *websocket.Conn) {
 						break
 					}
 				}
+				discoveryMutex.Unlock()
 				break
 			}
 		}
 	}()
 }
 
-func roundTimeoutChecker(hash string) {
+func roundTimeoutChecker(ctx context.Context, hash string) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
 	for {
-		match, exists := matchStore.GetMatch(hash)
-		if !exists {
-			break
-		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			match, exists := matchStore.GetMatch(hash)
+			if !exists {
+				return
+			}
 
-		match.mutex.RLock()
-		matchState := match.State
-		currentRound := match.GameState.CurrentRound
-		match.mutex.RUnlock()
+			match.mutex.RLock()
+			matchState := match.State
+			currentRound := match.GameState.CurrentRound
+			match.mutex.RUnlock()
 
-		if matchState != "playing" {
-			break
-		}
+			if matchState != "playing" {
+				return
+			}
 
-		roundNum := currentRound - 1
-		if roundNum < 0 || roundNum >= 5 {
-			break
-		}
+			roundNum := currentRound - 1
+			if roundNum < 0 || roundNum >= 5 {
+				return
+			}
 
-		match.mutex.RLock()
-		round := match.GameState.Rounds[roundNum]
-		match.mutex.RUnlock()
+			match.mutex.RLock()
+			round := match.GameState.Rounds[roundNum]
+			match.mutex.RUnlock()
 
-		if IsRoundTimeUp(&round) {
-			shouldEnd, _ := matchStore.ShouldEndRound(hash)
-			if shouldEnd && !round.Finished {
-				result, err := matchStore.EndRound(hash)
-				if err != nil {
-					LogGameRound(hash, roundNum+1, "timeout_error", logrus.Fields{
-						"error": err.Error(),
-					})
-					break
-				}
-
-				matchStore.BroadcastToRoom(hash, result)
-
-				match, _ := matchStore.GetMatch(hash)
-
-				match.mutex.RLock()
-				currentRound := match.GameState.CurrentRound
-				hostScore := match.GameState.HostScore
-				guestScore := match.GameState.GuestScore
-				match.mutex.RUnlock()
-
-				if currentRound < 5 {
-					time.AfterFunc(3*time.Second, func() {
-						matchStore.StartNextRound(hash)
-					})
-				} else {
-					gameEnd := GameEndPayload{
-						Type:       "game_end",
-						HostScore:  hostScore,
-						GuestScore: guestScore,
-						Winner:     GetWinner(hostScore, guestScore),
+			if IsRoundTimeUp(&round) {
+				shouldEnd, _ := matchStore.ShouldEndRound(hash)
+				if shouldEnd && !round.Finished {
+					result, err := matchStore.EndRound(hash)
+					if err != nil {
+						LogGameRound(hash, roundNum+1, "timeout_error", logrus.Fields{
+							"error": err.Error(),
+						})
+						return
 					}
-					matchStore.BroadcastToRoom(hash, gameEnd)
 
-					match.mutex.Lock()
-					match.State = "finished"
-					match.mutex.Unlock()
+					matchStore.BroadcastToRoom(hash, result)
 
-					PublishRoomState(hash, "finished", 2)
+					match, _ := matchStore.GetMatch(hash)
+
+					match.mutex.RLock()
+					currentRound := match.GameState.CurrentRound
+					hostScore := match.GameState.HostScore
+					guestScore := match.GameState.GuestScore
+					match.mutex.RUnlock()
+
+					if currentRound < 5 {
+						time.AfterFunc(3*time.Second, func() {
+							matchStore.StartNextRound(hash)
+						})
+					} else {
+						gameEnd := GameEndPayload{
+							Type:       "game_end",
+							HostScore:  hostScore,
+							GuestScore: guestScore,
+							Winner:     GetWinner(hostScore, guestScore),
+						}
+						matchStore.BroadcastToRoom(hash, gameEnd)
+
+						match.mutex.Lock()
+						match.State = "finished"
+						match.mutex.Unlock()
+
+						PublishRoomState(hash, "finished", 2)
+					}
 				}
 			}
 		}
-
-		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -183,7 +195,7 @@ func main() {
 
 	go func() {
 		ctx := context.Background()
-		SubscribeToRoomUpdates(ctx, discoveryConnections)
+		SubscribeToRoomUpdates(ctx)
 	}()
 
 	go cleanupFinishedMatches()
@@ -301,7 +313,7 @@ func main() {
 						"error": err.Error(),
 					})
 				} else {
-					go roundTimeoutChecker(hash)
+					go roundTimeoutChecker(context.Background(), hash)
 				}
 			case <-time.After(30 * time.Second):
 				LogMatchEvent(hash, "game_ready_timeout", logrus.Fields{})
