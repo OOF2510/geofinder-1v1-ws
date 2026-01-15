@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"runtime"
 	"sync"
 	"time"
@@ -56,15 +57,41 @@ func handleGameConnection(c *websocket.Conn, router *EventRouter) {
 
 	LogWebSocketConnection(hash, "", "", true)
 
+	var connectionRole string
+
+	defer func() {
+		if connectionRole != "" {
+			matchStore.RemoveConnection(hash, connectionRole)
+		}
+	}()
+
 	for {
+		messageType, data, err := c.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		if messageType != websocket.TextMessage {
+			continue
+		}
+
 		var message struct {
 			Event string      `json:"event"`
 			Data  interface{} `json:"data"`
 		}
-		err := c.ReadJSON(&message)
-		if err != nil {
-			LogWebSocketError(hash, err)
-			break
+		if err := json.Unmarshal(data, &message); err != nil {
+			continue
+		}
+
+		if message.Event == "auth" {
+			dataMap := message.Data.(map[string]interface{})
+			if playerID, ok := dataMap["playerID"].(string); ok {
+				if match.HostID == playerID {
+					connectionRole = "host"
+				} else if match.GuestID == playerID {
+					connectionRole = "guest"
+				}
+			}
 		}
 
 		dataMap := message.Data.(map[string]interface{})

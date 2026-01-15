@@ -103,9 +103,11 @@ func SubscribeToRoomUpdates(ctx context.Context) {
 		discoveryMutex.RUnlock()
 
 		for _, conn := range connections {
-			err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
-			if err != nil {
-				LogBroadcastError("", "discovery_client", err)
+			if conn != nil {
+				err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
+				if err != nil {
+					LogBroadcastError("", "discovery_client", err)
+				}
 			}
 		}
 	}
