@@ -4,14 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
-var discoveryMutex sync.Mutex
 
 func NewMatchStore() *MatchStore {
 	return &MatchStore{
@@ -239,16 +237,18 @@ func (store *MatchStore) EndRound(hash string) (*RoundResultPayload, error) {
 		return nil, fmt.Errorf("Match %s not found", hash)
 	}
 
-	match.mutex.Lock()
-	defer match.mutex.Unlock()
+	var result *RoundResultPayload
 
+	match.mutex.Lock()
 	roundNum := match.GameState.CurrentRound - 1
 	if roundNum < 0 || roundNum >= len(match.GameState.Rounds) {
+		match.mutex.Unlock()
 		return nil, fmt.Errorf("Invalid round number %d for match %s", roundNum, hash)
 	}
 
 	round := &match.GameState.Rounds[roundNum]
 	if round.Finished {
+		match.mutex.Unlock()
 		return nil, fmt.Errorf("Round %d for match %s already finished", roundNum, hash)
 	}
 
@@ -281,7 +281,7 @@ func (store *MatchStore) EndRound(hash string) (*RoundResultPayload, error) {
 		guestAnswer = &ans
 	}
 
-	result := &RoundResultPayload{
+	result = &RoundResultPayload{
 		Type:        "round_result",
 		RoundIndex:  roundNum + 1,
 		HostAnswer:  hostAnswer,
@@ -293,6 +293,8 @@ func (store *MatchStore) EndRound(hash string) (*RoundResultPayload, error) {
 	}
 
 	log.Printf("Ended round %d for match %s: host correct=%v, guest correct=%v", roundNum+1, hash, hostCorrect, guestCorrect)
+	match.mutex.Unlock() 
+
 	return result, nil
 }
 
@@ -302,11 +304,12 @@ func (store *MatchStore) StartNextRound(hash string) error {
 		return fmt.Errorf("Match %s not found", hash)
 	}
 
-	match.mutex.Lock()
-	defer match.mutex.Unlock()
+	var payload RoundStartPayload
 
+	match.mutex.Lock()
 	roundNum := match.GameState.CurrentRound
 	if roundNum >= 5 {
+		match.mutex.Unlock()
 		return fmt.Errorf("All rounds already played for match %s", hash)
 	}
 
@@ -315,12 +318,13 @@ func (store *MatchStore) StartNextRound(hash string) error {
 	round.EndTime = round.StartedAt.Add(30 * time.Second)
 	match.GameState.CurrentRound++
 
-	payload := RoundStartPayload{
+	payload = RoundStartPayload{
 		Type:       "round_start",
 		RoundIndex: roundNum + 1,
 		ImageURL:   round.ImageURL,
 		EndTime:    round.EndTime,
 	}
+	match.mutex.Unlock()
 
 	log.Printf("Started round %d for match %s", roundNum+1, hash)
 	return store.BroadcastToRoom(hash, payload)

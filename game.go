@@ -70,6 +70,9 @@ func GetWinner(hostscore, guestscore int) string {
 }
 
 func GetPlayerCount(match *Match) int {
+	match.mutex.RLock()
+	defer match.mutex.RUnlock()
+	
 	count := 0
 	if match.HostConn != nil {
 		count++

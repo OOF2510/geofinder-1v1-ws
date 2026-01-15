@@ -149,36 +149,64 @@ func handleDiscoveryConnection(ctx *gin.Context) {
 func roundTimeoutChecker(hash string) {
 	for {
 		match, exists := matchStore.GetMatch(hash)
-		if !exists || match.State != "playing" {
+		if !exists {
+			break
+		}
+		
+		match.mutex.RLock()
+		matchState := match.State
+		currentRound := match.GameState.CurrentRound
+		match.mutex.RUnlock()
+		
+		if matchState != "playing" {
 			break
 		}
 
-		roundNum := match.GameState.CurrentRound - 1
+		roundNum := currentRound - 1
 		if roundNum < 0 || roundNum >= 5 {
 			break
 		}
 
-		round := &match.GameState.Rounds[roundNum]
-		if IsRoundTimeUp(round) {
+		match.mutex.RLock()
+		round := match.GameState.Rounds[roundNum]
+		match.mutex.RUnlock()
+		
+		if IsRoundTimeUp(&round) {
 			shouldEnd, _ := matchStore.ShouldEndRound(hash)
 			if shouldEnd && !round.Finished {
-				result, _ := matchStore.EndRound(hash)
-				matchStore.BroadcastToRoom(hash, result)
+				result, err := matchStore.EndRound(hash)
+				if err != nil {
+					log.Printf("Error ending round: %v", err)
+					break
+				}
+				
+				matchStore.BroadcastToRoom(hash, result) 
 
 				match, _ := matchStore.GetMatch(hash)
-				if match.GameState.CurrentRound < 5 {
+				
+				match.mutex.RLock()
+				currentRound := match.GameState.CurrentRound
+				hostScore := match.GameState.HostScore
+				guestScore := match.GameState.GuestScore
+				match.mutex.RUnlock()
+				
+				if currentRound < 5 {
 					time.AfterFunc(3*time.Second, func() {
 						matchStore.StartNextRound(hash)
 					})
 				} else {
 					gameEnd := GameEndPayload{
 						Type:       "game_end",
-						HostScore:  match.GameState.HostScore,
-						GuestScore: match.GameState.GuestScore,
-						Winner:     GetWinner(match.GameState.HostScore, match.GameState.GuestScore),
+						HostScore:  hostScore,
+						GuestScore: guestScore,
+						Winner:     GetWinner(hostScore, guestScore),
 					}
 					matchStore.BroadcastToRoom(hash, gameEnd)
+					
+					match.mutex.Lock()
 					match.State = "finished"
+					match.mutex.Unlock()
+					
 					PublishRoomState(hash, "finished", 2)
 				}
 			}
@@ -406,23 +434,39 @@ func main() {
 
 		shouldEnd, _ := matchStore.ShouldEndRound(hash)
 		if shouldEnd {
-			result, _ := matchStore.EndRound(hash)
+			result, err := matchStore.EndRound(hash)
+			if err != nil {
+				log.Printf("Error ending round: %v", err)
+				return
+			}
+
 			matchStore.BroadcastToRoom(hash, result)
 
 			match, _ := matchStore.GetMatch(hash)
-			if match.GameState.CurrentRound < 5 {
+
+			match.mutex.RLock()
+			currentRound := match.GameState.CurrentRound
+			hostScore := match.GameState.HostScore
+			guestScore := match.GameState.GuestScore
+			match.mutex.RUnlock()
+
+			if currentRound < 5 {
 				time.AfterFunc(3*time.Second, func() {
 					matchStore.StartNextRound(hash)
 				})
 			} else {
 				gameEnd := GameEndPayload{
 					Type:       "game_end",
-					HostScore:  match.GameState.HostScore,
-					GuestScore: match.GameState.GuestScore,
-					Winner:     GetWinner(match.GameState.HostScore, match.GameState.GuestScore),
+					HostScore:  hostScore,
+					GuestScore: guestScore,
+					Winner:     GetWinner(hostScore, guestScore),
 				}
 				matchStore.BroadcastToRoom(hash, gameEnd)
+
+				match.mutex.Lock()
 				match.State = "finished"
+				match.mutex.Unlock()
+
 				PublishRoomState(hash, "finished", 2)
 			}
 		}
