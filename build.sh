@@ -17,3 +17,12 @@ echo "Building the project..."
 mkdir -p dist
 go build -v -x -race -o dist/geofinder-1v1-ws-${VERSION}.x86_64 .
 echo "Build completed. Executable is located at dist/geofinder-1v1-ws-${VERSION}.x86_64"
+
+echo "bulding test"
+cd test/
+gofmt -w .
+go mod download
+go mod tidy
+go build -v -x -o ../dist/test.x86_64 .
+echo "Test is at dist/test.x86_64"
+cd ..
