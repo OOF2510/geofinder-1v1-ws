@@ -33,7 +33,7 @@ func VerifyHash(hash string) (VerifyHashResponse, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	res, err := client.Get(API_BASE_URL + "1v1/verify?hash=" + hash)
 	if err != nil {
-		fmt.Println("Error verifying hash:", err)
+		LogRedisError("hash_verify", err)
 		return VerifyHashResponse{}, err
 	}
 	defer res.Body.Close()

@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+	"github.com/sirupsen/logrus"
 )
 
 var redisClient *redis.Client
@@ -24,11 +24,13 @@ func InitRedis() error {
 	ctx := context.Background()
 	err := redisClient.Ping(ctx).Err()
 	if err != nil {
-		log.Printf("Failed to connect to Redis %v", err)
+		LogRedisError("connect", err)
 		return err
 	}
 
-	log.Println("Connected to Redis")
+	LogWithFields(logrus.Fields{
+		"event": "redis_connected",
+	}).Info("Successfully connected to Redis")
 	return nil
 }
 
@@ -46,7 +48,13 @@ func PublishRoomState(hash string, state string, playerCount int) error {
 	}
 
 	ctx := context.Background()
-	return redisClient.Publish(ctx, "geofinder:room_updates", data).Err()
+	publishErr := redisClient.Publish(ctx, "geofinder:room_updates", data).Err()
+	if publishErr != nil {
+		LogRedisError("publish", publishErr)
+	} else {
+		LogRedisPublish("geofinder:room_updates", payload)
+	}
+	return publishErr
 }
 
 func StorePlayerIDs(hash string, hostID, guestID string) error {
@@ -82,15 +90,17 @@ func SubscribeToRoomUpdates(ctx context.Context, discoveryConnections []*websock
 	pubsub := redisClient.Subscribe(ctx, "geofinder:room_updates")
 	defer pubsub.Close()
 
+	LogRedisSubscribe("geofinder:room_updates")
+
 	ch := pubsub.Channel()
 	for msg := range ch {
-		log.Printf("Received room update from Redis: %s", msg.Payload)
+		LogRedisMessage("geofinder:room_updates", msg.Payload)
 
 		// Broadcast to all discovery connections
 		for _, conn := range discoveryConnections {
 			err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
 			if err != nil {
-				log.Printf("Failed to send room update to discovery client: %v", err)
+				LogBroadcastError("", "discovery_client", err)
 			}
 		}
 	}

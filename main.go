@@ -2,15 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"log"
 	"runtime"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 )
 
 var upgrader = websocket.Upgrader{}
@@ -18,35 +16,6 @@ var upgrader = websocket.Upgrader{}
 var matchStore *MatchStore
 var discoveryConnections []*websocket.Conn
 
-func handleWebSocket(ctx *gin.Context, router *EventRouter) {
-	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
-
-	if err != nil {
-		fmt.Println("Failed to set websocket upgrade:", err)
-		return
-	}
-	defer conn.Close()
-
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			fmt.Println("Read error:", err)
-			break
-		}
-		var message struct {
-			Event string      `json:"event"`
-			Data  interface{} `json:"data"`
-		}
-		err = json.Unmarshal(msg, &message)
-		if err != nil {
-			fmt.Println("JSON error:", err)
-			continue
-		}
-
-		router.Handle(conn, message.Event, message.Data)
-	}
-
-}
 
 func cleanupFinishedMatches() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -57,8 +26,10 @@ func cleanupFinishedMatches() {
 		for hash, match := range matchStore.matches {
 			if match.State == "finished" {
 				if time.Since(match.CreatedAt) > 10*time.Minute {
+					LogMatchLifecycle(hash, "cleanup", logrus.Fields{
+						"match_age_seconds": int64(time.Since(match.CreatedAt).Seconds()),
+					})
 					matchStore.DeleteMatch(hash)
-					log.Printf("Cleaned up finished match: %s", hash)
 				}
 			}
 		}
@@ -86,12 +57,12 @@ func handleGameConnection(ctx *gin.Context, router *EventRouter) {
 
 	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
+		LogWebSocketError(hash, err)
 		return
 	}
 	defer conn.Close()
 
-	log.Printf("WebSocket connected for match %s", hash)
+	LogWebSocketConnection(hash, "", "", true)
 
 	for {
 		var message struct {
@@ -100,7 +71,7 @@ func handleGameConnection(ctx *gin.Context, router *EventRouter) {
 		}
 		err := conn.ReadJSON(&message)
 		if err != nil {
-			log.Printf("Read error: %v", err)
+			LogWebSocketError(hash, err)
 			break
 		}
 
@@ -115,13 +86,13 @@ func handleGameConnection(ctx *gin.Context, router *EventRouter) {
 func handleDiscoveryConnection(ctx *gin.Context) {
 	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
-		log.Printf("Discovery WebSocket upgrade failed: %v", err)
+		LogRedisError("discovery_upgrade", err)
 		return
 	}
 
 	// Add to discovery connections
 	discoveryConnections = append(discoveryConnections, conn)
-	log.Println("New discovery connection")
+	LogDiscoveryConnection(true, len(discoveryConnections))
 
 	// Send initial waiting rooms
 	rooms := matchStore.GetWaitingRooms()
@@ -137,6 +108,7 @@ func handleDiscoveryConnection(ctx *gin.Context) {
 				for i, c := range discoveryConnections {
 					if c == conn {
 						discoveryConnections = append(discoveryConnections[:i], discoveryConnections[i+1:]...)
+						LogDiscoveryConnection(false, len(discoveryConnections))
 						break
 					}
 				}
@@ -152,12 +124,12 @@ func roundTimeoutChecker(hash string) {
 		if !exists {
 			break
 		}
-		
+
 		match.mutex.RLock()
 		matchState := match.State
 		currentRound := match.GameState.CurrentRound
 		match.mutex.RUnlock()
-		
+
 		if matchState != "playing" {
 			break
 		}
@@ -170,26 +142,28 @@ func roundTimeoutChecker(hash string) {
 		match.mutex.RLock()
 		round := match.GameState.Rounds[roundNum]
 		match.mutex.RUnlock()
-		
+
 		if IsRoundTimeUp(&round) {
 			shouldEnd, _ := matchStore.ShouldEndRound(hash)
 			if shouldEnd && !round.Finished {
 				result, err := matchStore.EndRound(hash)
 				if err != nil {
-					log.Printf("Error ending round: %v", err)
+					LogGameRound(hash, roundNum+1, "timeout_error", logrus.Fields{
+						"error": err.Error(),
+					})
 					break
 				}
-				
-				matchStore.BroadcastToRoom(hash, result) 
+
+				matchStore.BroadcastToRoom(hash, result)
 
 				match, _ := matchStore.GetMatch(hash)
-				
+
 				match.mutex.RLock()
 				currentRound := match.GameState.CurrentRound
 				hostScore := match.GameState.HostScore
 				guestScore := match.GameState.GuestScore
 				match.mutex.RUnlock()
-				
+
 				if currentRound < 5 {
 					time.AfterFunc(3*time.Second, func() {
 						matchStore.StartNextRound(hash)
@@ -202,11 +176,11 @@ func roundTimeoutChecker(hash string) {
 						Winner:     GetWinner(hostScore, guestScore),
 					}
 					matchStore.BroadcastToRoom(hash, gameEnd)
-					
+
 					match.mutex.Lock()
 					match.State = "finished"
 					match.mutex.Unlock()
-					
+
 					PublishRoomState(hash, "finished", 2)
 				}
 			}
@@ -220,7 +194,7 @@ func main() {
 	matchStore = NewMatchStore()
 
 	if err := InitRedis(); err != nil {
-		log.Println("failed to connect to redis" + err.Error())
+		LogRedisError("init", err)
 	}
 
 	go func() {
@@ -244,20 +218,6 @@ func main() {
 
 	eventRouter.On("ping", func(conn *websocket.Conn, data interface{}) {
 		conn.WriteMessage(websocket.TextMessage, []byte("pong"))
-	})
-
-	eventRouter.On("newRound", func(conn *websocket.Conn, data interface{}) {
-		imageResp, err := GetImage()
-		if err != nil {
-			fmt.Println("Error fetching image:", err)
-			return
-		}
-		respData, err := json.Marshal(imageResp)
-		if err != nil {
-			fmt.Println("Error marshaling image response:", err)
-			return
-		}
-		conn.WriteMessage(websocket.TextMessage, []byte(respData))
 	})
 
 	eventRouter.On("auth", func(conn *websocket.Conn, data interface{}) {
@@ -329,33 +289,41 @@ func main() {
 		}
 		err := conn.WriteJSON(authok)
 		if err != nil {
-			log.Printf("Error sending auth_ok to %s: %v", role, err)
+			LogBroadcastError(hash, role, err)
 			return
 		}
 
 		playerCount := GetPlayerCount(match)
 		if playerCount == 2 && match.State == "waiting" {
-			log.Printf("Both players connected for match %s, waiting for game ready", hash)
+			LogMatchEvent(hash, "both_players_connected", logrus.Fields{
+				"player_count": playerCount,
+			})
 			select {
 			case <-match.ReadyChan:
 				match.mutex.Lock()
 				if match.State == "waiting" {
 					match.State = "playing"
-					log.Printf("Starting game for match %s", hash)
+					LogMatchEvent(hash, "game_started", logrus.Fields{
+						"player_count": playerCount,
+					})
 					PublishRoomState(hash, match.State, playerCount)
 				} else {
-					log.Printf("Match %s already started (state: %s)", hash, match.State)
+					LogMatchEvent(hash, "game_already_started", logrus.Fields{
+						"current_state": match.State,
+					})
 				}
 				match.mutex.Unlock()
 
 				err := matchStore.StartNextRound(hash)
 				if err != nil {
-					log.Printf("Error starting round: %v", err)
+					LogGameRound(hash, 1, "start_error", logrus.Fields{
+						"error": err.Error(),
+					})
 				} else {
 					go roundTimeoutChecker(hash)
 				}
 			case <-time.After(30 * time.Second):
-				log.Printf("Timeout waiting for match %s to be ready", hash)
+				LogMatchEvent(hash, "game_ready_timeout", logrus.Fields{})
 				conn.WriteJSON(map[string]interface{}{
 					"type":    "error",
 					"message": "Game initialization timeout",
@@ -436,7 +404,9 @@ func main() {
 		if shouldEnd {
 			result, err := matchStore.EndRound(hash)
 			if err != nil {
-				log.Printf("Error ending round: %v", err)
+				LogGameRound(hash, 0, "end_error", logrus.Fields{
+					"error": err.Error(),
+				})
 				return
 			}
 
@@ -502,9 +472,14 @@ func main() {
 
 	err := server.Run(":8080")
 	if err != nil {
-		fmt.Println("Failed to start server:", err)
-		panic("Failed to start server")
+		LogWithFields(logrus.Fields{
+			"event": "server_start_error",
+			"error": err.Error(),
+		}).Fatal("Failed to start server")
 	}
 
-	log.Println("Server started on http://localhost:8080")
+	LogWithFields(logrus.Fields{
+		"event":   "server_start",
+		"address": ":8080",
+	}).Info("Server started successfully")
 }

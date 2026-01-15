@@ -3,13 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 )
-
 
 func NewMatchStore() *MatchStore {
 	return &MatchStore{
@@ -43,10 +42,10 @@ func (store *MatchStore) CreateMatch(hash string) *Match {
 		},
 	}
 	store.matches[hash] = match
-	log.Printf("Created new match: %s", hash)
+	LogMatchLifecycle(hash, "created", logrus.Fields{})
 
 	go func(m *Match) {
-		log.Printf("Prefetching rounds for new match %s", hash)
+		LogMatchLifecycle(hash, "prefetching_started", logrus.Fields{})
 		ok, err := PrefetchRounds(m)
 		if ok && err == nil {
 			m.mutex.Lock()
@@ -55,9 +54,11 @@ func (store *MatchStore) CreateMatch(hash string) *Match {
 			m.ReadyOnce.Do(func() {
 				close(m.ReadyChan)
 			})
-			log.Printf("Match %s is ready", hash)
+			LogMatchLifecycle(hash, "ready", logrus.Fields{})
 		} else {
-			log.Printf("Failed to prefetch rounds for match %s: %v", hash, err)
+			LogMatchLifecycle(hash, "prefetch_failed", logrus.Fields{
+				"error": err.Error(),
+			})
 		}
 	}(match)
 
@@ -68,7 +69,7 @@ func (store *MatchStore) DeleteMatch(hash string) {
 	store.mutex.Lock()
 	delete(store.matches, hash)
 	store.mutex.Unlock()
-	log.Printf("Deleted match: %s", hash)
+	LogMatchLifecycle(hash, "deleted", logrus.Fields{})
 }
 
 func GeneratePlayerID() (string, error) {
@@ -92,11 +93,11 @@ func (store *MatchStore) SetConnection(hash string, playerID string, role string
 	case "host":
 		match.HostConn = conn
 		match.HostID = playerID
-		log.Printf("Set host connection for match %s, player %s", hash, playerID)
+		LogWebSocketConnection(hash, role, playerID, true)
 	case "guest":
 		match.GuestConn = conn
 		match.GuestID = playerID
-		log.Printf("Set guest connection for match %s, player %s", hash, playerID)
+		LogWebSocketConnection(hash, role, playerID, true)
 	default:
 		return fmt.Errorf("Invalid role: %s", role)
 	}
@@ -115,11 +116,13 @@ func (store *MatchStore) RemoveConnection(hash string, role string) error {
 
 	switch role {
 	case "host":
+		playerID := match.HostID
 		match.HostConn = nil
-		log.Printf("Removed host connection for match %s", hash)
+		LogWebSocketConnection(hash, role, playerID, false)
 	case "guest":
+		playerID := match.GuestID
 		match.GuestConn = nil
-		log.Printf("Removed guest connection for match %s", hash)
+		LogWebSocketConnection(hash, role, playerID, false)
 	default:
 		return fmt.Errorf("Invalid role: %s", role)
 	}
@@ -141,21 +144,26 @@ func (store *MatchStore) BroadcastToRoom(hash string, message interface{}) error
 	match.mutex.RLock()
 	defer match.mutex.RUnlock()
 
-	log.Printf("Broadcasting to match %s: host=%v, guest=%v", hash, match.HostConn != nil, match.GuestConn != nil)
+	recipientCount := 0
+	if match.HostConn != nil {
+		recipientCount++
+	}
+	if match.GuestConn != nil {
+		recipientCount++
+	}
+	LogBroadcastEvent(hash, "room_message", recipientCount)
 
 	if match.HostConn != nil {
 		if err := match.HostConn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Printf("Error sending message to host in match %s: %v", hash, err)
+			LogBroadcastError(hash, "host", err)
 			return fmt.Errorf("failed to send to host: %w", err)
 		}
-		log.Printf("Successfully sent message to host in match %s", hash)
 	}
 	if match.GuestConn != nil {
 		if err := match.GuestConn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Printf("Error sending message to guest in match %s: %v", hash, err)
+			LogBroadcastError(hash, "guest", err)
 			return fmt.Errorf("failed to send to guest: %w", err)
 		}
-		log.Printf("Successfully sent message to guest in match %s", hash)
 	}
 
 	return nil
@@ -197,15 +205,18 @@ func (store *MatchStore) SubmitAnswer(hash, playerID, countryCode, countryName s
 	switch playerID {
 	case match.HostID:
 		round.HostGuess = answer
-		log.Printf("Host %s submitted answer for match %s round %d", playerID, hash, roundNum+1)
 	case match.GuestID:
 		round.GuestGuess = answer
-		log.Printf("Guest %s submitted answer for match %s round %d", playerID, hash, roundNum+1)
 	default:
 		return fmt.Errorf("Player %s not part of match %s", playerID, hash)
 	}
 
-	log.Printf("Player %s submitted answer for match %s round %d: %s (%s)", playerID, hash, roundNum+1, countryName, countryCode)
+	LogPlayerAction(hash, playerID, "submit_answer", logrus.Fields{
+		"round_number": roundNum + 1,
+		"country_code": countryCode,
+		"country_name": countryName,
+		"submitted_at": answer.SubmittedAt,
+	})
 	return nil
 }
 
@@ -292,8 +303,13 @@ func (store *MatchStore) EndRound(hash string) (*RoundResultPayload, error) {
 		GuestScore:  match.GameState.GuestScore,
 	}
 
-	log.Printf("Ended round %d for match %s: host correct=%v, guest correct=%v", roundNum+1, hash, hostCorrect, guestCorrect)
-	match.mutex.Unlock() 
+	LogGameRound(hash, roundNum+1, "ended", logrus.Fields{
+		"host_correct":  hostCorrect,
+		"guest_correct": guestCorrect,
+		"host_score":    match.GameState.HostScore,
+		"guest_score":   match.GameState.GuestScore,
+	})
+	match.mutex.Unlock()
 
 	return result, nil
 }
@@ -326,7 +342,10 @@ func (store *MatchStore) StartNextRound(hash string) error {
 	}
 	match.mutex.Unlock()
 
-	log.Printf("Started round %d for match %s", roundNum+1, hash)
+	LogGameRound(hash, roundNum+1, "started", logrus.Fields{
+		"image_url": round.ImageURL,
+		"end_time":  round.EndTime,
+	})
 	return store.BroadcastToRoom(hash, payload)
 }
 

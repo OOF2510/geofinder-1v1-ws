@@ -1,12 +1,13 @@
 package main
 
 import (
-	"log"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 func PrefetchRounds(match *Match) (ok bool, err error) {
-	log.Printf("Prefetching rounds for match %s", match.Hash)
+	LogMatchLifecycle(match.Hash, "prefetch_start", logrus.Fields{})
 
 	for i := range 5 {
 		var imgResp ImageResponse
@@ -14,15 +15,22 @@ func PrefetchRounds(match *Match) (ok bool, err error) {
 		for j := range 5 {
 			imgResp, err = GetImage()
 			if err == nil {
-				log.Printf("Fetched round %d image for match %s: %s", i+1, match.Hash, imgResp.ImageURL)
+				LogGameRound(match.Hash, i+1, "image_fetched", logrus.Fields{
+					"image_url": imgResp.ImageURL,
+				})
 				break
 			}
-			log.Printf("Error fetching image for match %s: %v. Retrying..., try %d", match.Hash, err, j+1)
+			LogGameRound(match.Hash, i+1, "image_fetch_retry", logrus.Fields{
+				"attempt": j + 1,
+				"error":   err.Error(),
+			})
 			time.Sleep(1 * time.Second)
 		}
 
 		if err != nil {
-			log.Printf("Failed to fetch image for round %d of match %s after 5 attempts: %v", i+1, match.Hash, err)
+			LogGameRound(match.Hash, i+1, "image_fetch_failed", logrus.Fields{
+				"error": err.Error(),
+			})
 			return false, err
 		}
 
@@ -41,7 +49,7 @@ func PrefetchRounds(match *Match) (ok bool, err error) {
 		match.GameState.Rounds[i] = round
 		match.mutex.Unlock()
 	}
-	log.Printf("Successfully prefetched all rounds for match %s", match.Hash)
+	LogMatchLifecycle(match.Hash, "prefetch_complete", logrus.Fields{})
 	return true, nil
 }
 
@@ -72,7 +80,7 @@ func GetWinner(hostscore, guestscore int) string {
 func GetPlayerCount(match *Match) int {
 	match.mutex.RLock()
 	defer match.mutex.RUnlock()
-	
+
 	count := 0
 	if match.HostConn != nil {
 		count++
