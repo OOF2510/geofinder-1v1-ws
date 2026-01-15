@@ -10,8 +10,8 @@ VERSION=${1}
 
 echo "Running gofmt, go mod download and go mod tidy..."
 gofmt -w .
-go mod tidy
 go mod download
+go mod tidy
 
 echo "Building the project..."
 mkdir -p dist
